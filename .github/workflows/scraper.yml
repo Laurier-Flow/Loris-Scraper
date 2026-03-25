@@ -2,7 +2,7 @@ name: LORIS Scraper
 
 on:
   schedule:
-    - cron: '0 11 * * 1'  # Mondays at 11am UTC (6am EST / 7am EDT)
+    - cron: '0 11 1,15 * *'  # 1st and 15th of each month at 11am UTC (6am EST / 7am EDT)
   workflow_dispatch:       # Allow manual runs from the Actions tab
 
 jobs:
