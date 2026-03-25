@@ -1,67 +1,100 @@
-// INSTRUCTIONS:
-// Adjust cookies if you are changing the term you want to get CRNs for
-// You can adjust the term using the predefined constants, or add more constants as needed
 // For support, contact: qfaizaan@gmail.com
+
+require("dotenv").config({ path: ".env.local" });
 
 const axios = require("axios");
 const puppeteer = require("puppeteer");
 const { createClient } = require("@supabase/supabase-js");
 const qs = require("qs");
-const supabase = createClient("https://glgfhicgkucusxypfnyw.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdsZ2ZoaWNna3VjdXN4eXBmbnl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDMwNTA5MzIsImV4cCI6MjAxODYyNjkzMn0.L27FhOZ3xVriTaZSgtPJ5KwctrQzmvkGOnXc6-NJjMo");
 
-const FALL2023 = "202309";
-const WINTER2024 = "202401";
-const SPRING2024 = "202405";
-
-// UPDATE THIS REF FOR EACH TERM
-const TERM_REF = `/${SPRING2024}/`;
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 const apiUrl = "https://loris.wlu.ca/register/ssb/registration/";
 const coursesURL = "https://loris.wlu.ca/register/ssb/courseSearchResults/courseSearchResults/";
 const courseDetailsURL = "https://loris.wlu.ca/register/ssb/searchResults/searchResults/";
 const professorAndMeetingTimesURL = "https://loris.wlu.ca/register/ssb/searchResults/getFacultyMeetingTimes";
 
-// getCookies(page) takes a page from a puppeteer browser, and performs certain actions to get to the required LORIS pages.
-// It then returns all browser cookies and returns them in a list
-// Usage: getCookies(page)
-async function getCookies(page) {
+// Returns the list of terms to scrape based on the current date.
+// Winter (Jan–Apr): current Winter + Spring
+// Spring (May–Aug): current Spring + Fall + next Winter + next Spring
+// Fall  (Sep–Dec): current Fall + next Winter + next Spring
+function getTermsToScrape() {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+
+  const term = (y, suffix, season) => ({ code: `${y}${suffix}`, name: `${season} ${y}` });
+
+  if (month <= 4) {
+    return [
+      term(year, "01", "Winter"),
+      term(year, "05", "Spring"),
+    ];
+  } else if (month <= 8) {
+    return [
+      term(year, "05", "Spring"),
+      term(year, "09", "Fall"),
+      term(year + 1, "01", "Winter"),
+      term(year + 1, "05", "Spring"),
+    ];
+  } else {
+    return [
+      term(year, "09", "Fall"),
+      term(year + 1, "01", "Winter"),
+      term(year + 1, "05", "Spring"),
+    ];
+  }
+}
+
+// Navigates to LORIS, selects the given term by its display name (e.g. "Winter 2026")
+// in the select2 dropdown, and returns the session cookies.
+async function getCookies(page, termName) {
   await page.goto(apiUrl);
   await page.waitForSelector("#catalogSearchLink");
   await page.click("#catalogSearchLink");
   await page.waitForSelector("a.select2-choice");
-  await page.waitForTimeout(2000);
+  await new Promise(resolve => setTimeout(resolve, 2000));
   await page.click("a.select2-choice");
-  await page.waitForTimeout(1000);
-  // The amount of ArrowDown is dependant on which term you want to scrap,
-  // go to Loris Registration to see how many to do
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("ArrowDown");
-  //
-  await page.keyboard.press("Enter");
-  await page.click("button#term-go");
-  await page.waitForTimeout(5000);
-  await page.click("button#search-go");
-  await page.waitForTimeout(5000);
-  let buttons = await page.$$(
-    "table#table1 button.form-button.search-section-button"
-  );
-  await buttons[0].click();
-  const hijackedCookies = await page.cookies();
-  const cookies = [
-    hijackedCookies[0].name + "=" + hijackedCookies[0].value,
-    hijackedCookies[1].name + "=" + hijackedCookies[1].value,
-    hijackedCookies[2].name + "=" + hijackedCookies[2].value,
-    hijackedCookies[3].name + "=" + hijackedCookies[3].value,
-    hijackedCookies[4].name + "=" + hijackedCookies[4].value,
-  ];
-  return cookies;
-}
-//
 
-// reset(axiosInstance) takes an axios axiosInstance, and resets the data form. This operation must be performed so that
-// subsequent requests to get course information work as expected
-// Usage: reset(axiosInstance)
+  // Wait for the dropdown to open, then wait for actual results (not the "Searching..." placeholder)
+  await page.waitForSelector(".select2-drop-active", { visible: true });
+  await page.waitForSelector(".select2-drop-active li.select2-result", { visible: true });
+
+  // Use Puppeteer element handles so the real mouse event fires and select2 registers it
+  const options = await page.$$(".select2-drop-active li.select2-result");
+  let clicked = false;
+  for (const option of options) {
+    const text = await page.evaluate(el => el.textContent.trim(), option);
+    if (text === termName) {
+      await option.click();
+      clicked = true;
+      break;
+    }
+  }
+
+  if (!clicked) {
+    const available = await page.evaluate(() =>
+      [...document.querySelectorAll(".select2-drop-active li.select2-result")]
+        .map(li => li.textContent.trim())
+    );
+    throw new Error(`Term "${termName}" not found. Available: ${available.join(", ")}`);
+  }
+
+  await page.click("button#term-go");
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  await page.click("button#search-go");
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
+  const buttons = await page.$$("table#table1 button.form-button.search-section-button");
+  await buttons[0].click();
+
+  const hijackedCookies = await page.cookies();
+  return hijackedCookies.slice(0, 5).map(c => `${c.name}=${c.value}`);
+}
+
 async function reset(axiosInstance, retryCount = 0) {
   try {
     await axiosInstance.post(
@@ -70,357 +103,280 @@ async function reset(axiosInstance, retryCount = 0) {
     );
   } catch (error) {
     if (retryCount < 5) {
-      console.error('Reset data form error, reattempting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      reset(axiosInstance);
+      console.error(`Reset failed, retrying (attempt ${retryCount + 1})...`);
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+      await reset(axiosInstance, retryCount + 1);
     } else {
-      console.error("Reset data form failed after 5 retries");
+      console.error("Reset failed after 5 retries");
     }
   }
 }
-//
 
-function removeAllSpaces(inputString) {
-  return inputString.replace(/\s/g, '');
+function removeAllSpaces(str) {
+  return str.replace(/\s/g, "");
 }
-
-// getCourseInfo(courseCode, term, axiosInstance) takes in a string courseCode, string term, and axios axiosInstance.
-// It initializes a payload accordingly, sends a request to get course information, and returns the response data.
-// Usage: getCourseInfo('BU121', '202405', axiosInstance);
-async function getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, dataArray, axiosInstance, retryCount = 0) {
-  await reset(axiosInstance);
-  const payload = {
-    txt_subjectcoursecombo: removeAllSpaces(courseCode),
-    txt_term: term,
-    pageOffset: pageOffset,
-    pageMaxSize: pageMaxSize,
-    sortColumn: "subjectDescription",
-    sortDirection: "asc",
-  }
-
-  const config = {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-  };
-
-  try {
-    const response = await axiosInstance.post(
-      courseDetailsURL,
-      payload,
-      config
-    );
-
-    // Get the data
-    const data = response.data.data;
-
-    // Loop through the data
-
-    data.forEach((element) => {
-      // Add it to a list of maps that contains the CRN and associated course code
-      dataArray.push(element.courseReferenceNumber);
-    });
-  } catch (error) {
-    if (retryCount < 5) {
-      console.error('Get course CRNs by page failed, reattemting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, dataArray, axiosInstance);
-    } else {
-      console.error('Getting course CRNs by page failed after 5 retries:', error);
-    }
-  }
-}
-//
 
 function cleanCourseTitle(courseTitle) {
-  const entities = {
-    '&amp;': '&',
-    // Add more entities and their replacements as needed
-  };
-
-  let cleanTitle = courseTitle;
-  for (const entity in entities) {
-    if (Object.prototype.hasOwnProperty.call(entities, entity)) {
-      cleanTitle = cleanTitle.replace(new RegExp(entity, 'g'), entities[entity]);
-    }
+  const entities = { "&amp;": "&", "&quot;": '"', "&lt;": "<", "&gt;": ">" };
+  let title = courseTitle;
+  for (const [entity, replacement] of Object.entries(entities)) {
+    title = title.replace(new RegExp(entity, "g"), replacement);
   }
-
-  cleanTitle = cleanTitle.replace(/[$+,:;=?@#|'<>.^*()%!-]/g, ' '); // Replace with space
-  cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim();
-
-  return cleanTitle;
+  return title.replace(/[$+,:;=?@#|'<>.^*()%!-]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance), takes a string term, an int pageOffset to determine which page to get courses from,
-// an int pageMaxSize to set how many courses are listed on each page, and an axios axiosInstance
-// Note that if your pageMaxSize is set to length x, you'll need to increment your pageOffset by x in a loop to get more courses iteratively, otherwise
-// you will get repeated items
-// Usage: getCoursesByPage('202405', 0, 50, axiosInstance)
-async function getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance, retryCount = 0) {
-  await reset(axiosInstance);
-  const payload = {
-    txt_term: term,
-    pageOffset: pageOffset,
-    pageMaxSize: pageMaxSize,
-    sortColumn: "subjectDescription",
-    sortDirection: "asc",
-  };
-
-  const payloadString = qs.stringify(payload);
-
-  const config = {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-  };
-
-  try {
-    const response = await axiosInstance.post(
-      coursesURL,
-      payloadString,
-      config
-    );
-
-    const entities = {
-      '&amp;': '&',
-      '&quot;': '"',
-      '&lt;': '<',
-      '&gt;': '>',
-    };
-
-    // Get the data
-    const data = response.data.data;
-    const courseInfo = [];
-    // Loop through the data
-    data.forEach((element) => {
-      courseInfo.push({ courseCode: `${element.departmentCode} ${element.courseNumber}`, courseTitle: cleanCourseTitle(element.courseTitle) });
-    });
-    // Return the course info
-    return courseInfo;
-  } catch (error) {
-    if (retryCount < 5) {
-      console.error('Getting courses by page failed, reattemting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance);
-    } else {
-      console.error('Getting courses by page failed after 5 retries:', error);
-    }
-  }
-}
-//
-
-// getCoursesTotalCount(term, axiosInstance) takes in a string/constant term and an axios axiosInstance,
-// returning the number of total courses in Loris for that term
 async function getCoursesTotalCount(term, axiosInstance, retryCount = 0) {
   await reset(axiosInstance);
-  const payload = {
-    txt_term: term,
-    pageOffset: 0,
-    pageMaxSize: 10,
-    sortColumn: "subjectDescription",
-    sortDirection: "asc",
-  };
-
-  const payloadString = qs.stringify(payload);
-
-  const config = {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-  };
-
+  const payload = qs.stringify({
+    txt_term: term, pageOffset: 0, pageMaxSize: 1,
+    sortColumn: "subjectDescription", sortDirection: "asc",
+  });
   try {
-    const response = await axiosInstance.post(
-      coursesURL,
-      payloadString,
-      config
-    );
-
+    const response = await axiosInstance.post(coursesURL, payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data.totalCount;
   } catch (error) {
     if (retryCount < 5) {
-      console.error('Getting course total count failed, reattemting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return getCoursesTotalCount(term, axiosInstance)
-    } else {
-      console.error('Getting course total count failed after 5 retries:', error);
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+      return getCoursesTotalCount(term, axiosInstance, retryCount + 1);
     }
+    throw error;
   }
 }
-//
+
+async function getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance, retryCount = 0) {
+  await reset(axiosInstance);
+  const payload = qs.stringify({
+    txt_term: term, pageOffset, pageMaxSize,
+    sortColumn: "subjectDescription", sortDirection: "asc",
+  });
+  try {
+    const response = await axiosInstance.post(coursesURL, payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    return response.data.data.map(el => ({
+      courseCode: `${el.departmentCode} ${el.courseNumber}`,
+      courseTitle: cleanCourseTitle(el.courseTitle),
+    }));
+  } catch (error) {
+    if (retryCount < 5) {
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+      return getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance, retryCount + 1);
+    }
+    throw error;
+  }
+}
 
 async function getSectionTotalCount(term, courseCode, axiosInstance, retryCount = 0) {
   await reset(axiosInstance);
   const payload = {
     txt_subjectcoursecombo: removeAllSpaces(courseCode),
-    txt_term: term,
-    pageOffset: 0,
-    pageMaxSize: 10,
-    sortColumn: "subjectDescription",
-    sortDirection: "asc",
-  }
-
-  const config = {
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    txt_term: term, pageOffset: 0, pageMaxSize: 1,
+    sortColumn: "subjectDescription", sortDirection: "asc",
   };
-
   try {
-    const response = await axiosInstance.post(
-      courseDetailsURL,
-      payload,
-      config
-    );
-
+    const response = await axiosInstance.post(courseDetailsURL, payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
     return response.data.totalCount;
   } catch (error) {
     if (retryCount < 5) {
-      console.error('Getting section total count failed, reattemting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      return getSectionTotalCount(term, courseCode, axiosInstance)
-    } else {
-      console.error('Getting section total count failed after 5 retries:', error);
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+      return getSectionTotalCount(term, courseCode, axiosInstance, retryCount + 1);
     }
+    throw error;
+  }
+}
+
+// Returns an array of CRNs for one page of a course's sections.
+async function getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, axiosInstance, retryCount = 0) {
+  await reset(axiosInstance);
+  const payload = {
+    txt_subjectcoursecombo: removeAllSpaces(courseCode),
+    txt_term: term, pageOffset, pageMaxSize,
+    sortColumn: "subjectDescription", sortDirection: "asc",
+  };
+  try {
+    const response = await axiosInstance.post(courseDetailsURL, payload, {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    return response.data.data.map(el => el.courseReferenceNumber);
+  } catch (error) {
+    if (retryCount < 5) {
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+      return getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, axiosInstance, retryCount + 1);
+    }
+    throw error;
   }
 }
 
 async function getProfessorByCRN(term, CRN, axiosInstance, retryCount = 0) {
-  const payload = {
-    term: term,
-    courseReferenceNumber: CRN
-  }
-
   try {
-    const response = await axiosInstance.get(
-      professorAndMeetingTimesURL,
-      {
-        params: payload
-      }
-    );
-
-    const profs = [];
-
-    if (response === undefined || response.data === undefined
-      || response.data.fmt[0] === undefined || response.data.fmt[0].faculty === undefined) {
-      return [];
-    }
-
-    const faculty = response.data.fmt[0].faculty;
-
-    faculty.forEach((element) => {
-      profs.push({ displayName: element.displayName, emailAddress: element.emailAddress });
+    const response = await axiosInstance.get(professorAndMeetingTimesURL, {
+      params: { term, courseReferenceNumber: CRN },
     });
-
-    return profs;
+    if (!response?.data?.fmt?.[0]?.faculty) return [];
+    return response.data.fmt[0].faculty.map(f => ({
+      displayName: f.displayName,
+      emailAddress: f.emailAddress,
+    }));
   } catch (error) {
     if (retryCount < 5) {
-      console.error('Getting professor by CRN failed, reattemting (attempt' + retryCount + 1 + ')...');
-      const delay = Math.pow(2, retryCount) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getProfessorByCRN(term, CRN, axiosInstance, retryCount + 1);
-    } else {
-      console.error('Getting professor by CRN failed after 5 retries:', error);
     }
+    throw error;
   }
 }
 
-// Replace this driver code with your code to access the Loris API
-(async () => {
-  const browser = await puppeteer.launch({ headless: false });
+// Fetches all CRNs for a course across all pages. Uses pageMaxSize=500 to minimize round-trips.
+async function getAllCRNsForCourse(term, courseCode, axiosInstance) {
+  const total = await getSectionTotalCount(term, courseCode, axiosInstance);
+  if (total === 0) return [];
+  const pageSize = 500;
+  const pages = Math.ceil(total / pageSize);
+  const crns = [];
+  for (let i = 0; i < pages; i++) {
+    const batch = await getCourseCRNsByPage(courseCode, term, i * pageSize, pageSize, axiosInstance);
+    crns.push(...batch);
+  }
+  return crns;
+}
+
+// Scrapes all courses and sections for one term.
+// Each term gets its own browser session so terms can safely run in parallel.
+async function scrapeTerm({ code, name }) {
+  // p-limit v5 is ESM-only, use dynamic import
+  const { default: pLimit } = await import("p-limit");
+  const limit = pLimit(10);
+
+  console.log(`[${name}] Starting scrape...`);
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
+  });
   const page = await browser.newPage();
-  const cookies = await getCookies(page);
+  const cookies = await getCookies(page, name);
   await browser.close();
 
-  const axiosInstance = axios.create({
-    headers: {
-      Cookie: cookies.join("; "),
-    },
-  });
+  const axiosInstance = axios.create({ headers: { Cookie: cookies.join("; ") } });
 
-  const totalCount = await getCoursesTotalCount(SPRING2024, axiosInstance);
-  const pages = Math.ceil(totalCount / 500);
+  const totalCourses = await getCoursesTotalCount(code, axiosInstance);
+  const pageSize = 500;
+  const totalPages = Math.ceil(totalCourses / pageSize);
+  console.log(`[${name}] ${totalCourses} courses, ${totalPages} page(s)`);
 
-  for (let i = 0; i <= pages; i++) {
-    console.log("////////////// Page " + i + " Begins //////////////");
-    const data = await getCoursesByPage(SPRING2024, i * 500, 500, axiosInstance);
-    for (d in data) {
-      const sectionTotalCount = await getSectionTotalCount(SPRING2024, data[d].courseCode, axiosInstance);
-      const pages2 = Math.ceil(sectionTotalCount / 50);
-      let allSections = [];
-      if (sectionTotalCount > 0) {
-        for (let i = 0; i <= pages2; i++) {
-          await getCourseCRNsByPage(data[d].courseCode, SPRING2024, i * 50, 50, allSections, axiosInstance);
+  for (let i = 0; i < totalPages; i++) {
+    const courses = await getCoursesByPage(code, i * pageSize, pageSize, axiosInstance);
 
-          const { error } = await supabase
-            .from('courses')
-            .upsert({ course_code: data[d].courseCode, course_title: data[d].courseTitle, total_reviews: 0 }, { ignoreDuplicates: true })
+    const courseUpserts = courses.map(c => ({
+      course_code: c.courseCode,
+      course_title: c.courseTitle,
+      total_reviews: 0,
+    }));
+    const sectionUpserts = [];
+    const instructorUpserts = [];
 
-          for (CRN in allSections) {
-            const profData = await getProfessorByCRN(SPRING2024, allSections[CRN], axiosInstance);
-            let profName = null;
-            let profEmail = null;
-            for (const prof of profData) {
-              const regex = /[.$#/[\]]/g;
-              profName = prof.displayName.replace(regex, '');
-              profEmail = prof.emailAddress;
-            }
+    for (const course of courses) {
+      const crns = await getAllCRNsForCourse(code, course.courseCode, axiosInstance);
+      if (crns.length === 0) {
+        console.log(`[${name}]   ${course.courseCode} — no sections, skipping`);
+        continue;
+      }
 
-            await supabase
-              .from('sections')
-              .upsert({ course_registration_number: allSections[CRN], term: SPRING2024, instructor_name_fk: profName, course_code_fk: data[d].courseCode }, { ignoreDuplicates: true });
+      console.log(`[${name}]   ${course.courseCode} "${course.courseTitle}" — ${crns.length} section(s), fetching profs...`);
 
-            await supabase
-              .from('instructors')
-              .upsert({ instructor_name: profName, instructor_email: profEmail, total_reviews: 0 }, { ignoreDuplicates: true });
-          }
+      // getProfessorByCRN is a stateless GET — safe to parallelize with p-limit
+      const profResults = await Promise.all(
+        crns.map(crn => limit(() => getProfessorByCRN(code, crn, axiosInstance)))
+      );
+
+      for (let j = 0; j < crns.length; j++) {
+        const crn = crns[j];
+        const profData = profResults[j];
+        let profName = null, profEmail = null;
+        for (const prof of profData) {
+          profName = prof.displayName.replace(/[.$#/[\]]/g, "");
+          profEmail = prof.emailAddress;
+        }
+        console.log(`[${name}]     CRN ${crn} → ${profName ?? "no instructor"}`);
+        sectionUpserts.push({
+          course_registration_number: crn,
+          term: code,
+          instructor_name_fk: profName,
+          course_code_fk: course.courseCode,
+        });
+        if (profName) {
+          instructorUpserts.push({
+            instructor_name: profName,
+            instructor_email: profEmail,
+            total_reviews: 0,
+          });
         }
       }
     }
-    console.log("////////////// Page " + i + " Ends //////////////");
-  }
 
-  /*
-  for (let i = 0; i <= pages; i++) {
-    const data = await getCoursesByPage(WINTER2024, i * 500, 500, axiosInstance);
-    for (d in data) {
-      const sectionTotalCount = await getSectionTotalCount(WINTER2024, d, axiosInstance);
-      const pages2 = Math.ceil(sectionTotalCount / 50);
-      let CRNs = [];
-      for (let i = 0; i < pages2; i++) {
-        await getCourseCRNsByPage(data[d], WINTER2024, i * 50, 50, CRNs, axiosInstance);
-      }
-      if (CRNs != []) {
-        for (const CRN of CRNs) {
-          const profData = await getProfessorByCRN("202309", CRN, axiosInstance);
-          for (const prof of profData) {
-            const regex = /[.$#/[\]]/g;
-            const profName = prof.displayName.replace(regex, '');
+    // Batch all upserts for this page in 3 round-trips instead of 3 × N
+    console.log(`[${name}] Page ${i + 1}/${totalPages} — upserting ${courseUpserts.length} courses, ${sectionUpserts.length} sections, ${instructorUpserts.length} instructors...`);
 
-            console.log(profName);
-            console.log(prof.emailAddress);
-            console.log(CRN);
-          }
-        };
+    const succeededCourseCodes = new Set();
+    if (courseUpserts.length) {
+      const { error } = await supabase.from("courses").upsert(courseUpserts, { ignoreDuplicates: true });
+      if (error) {
+        // Fall back to individual upserts to identify which row(s) are bad
+        const failedCourses = [];
+        for (const course of courseUpserts) {
+          const { error: e } = await supabase.from("courses").upsert(course, { ignoreDuplicates: true });
+          if (e) failedCourses.push(`${course.course_code} (${e.message})`);
+          else succeededCourseCodes.add(course.course_code);
+        }
+        if (failedCourses.length) {
+          console.error(`[${name}] Failed courses:\n  ${failedCourses.join("\n  ")}`);
+        }
+      } else {
+        courseUpserts.forEach(c => succeededCourseCodes.add(c.course_code));
+        console.log(`[${name}]   courses OK`);
       }
     }
-    console.log("page " + i + " ended");
+
+    // Instructors must be upserted before sections due to FK constraint
+    if (instructorUpserts.length) {
+      const { error } = await supabase.from("instructors").upsert(instructorUpserts, { ignoreDuplicates: true });
+      if (error) {
+        console.error(`[${name}] Instructor batch error — falling back to individual upserts`);
+        for (const instructor of instructorUpserts) {
+          const { error: e } = await supabase.from("instructors").upsert(instructor, { ignoreDuplicates: true });
+          if (e) console.error(`[${name}]   skipping instructor "${instructor.instructor_name}": ${e.message}`);
+        }
+      } else {
+        console.log(`[${name}]   instructors OK`);
+      }
+    }
+
+    const validSections = sectionUpserts.filter(s => succeededCourseCodes.has(s.course_code_fk));
+    if (validSections.length) {
+      const { error } = await supabase.from("sections").upsert(validSections, { ignoreDuplicates: true });
+      if (error) {
+        console.error(`[${name}] Section batch error — falling back to individual upserts`);
+        for (const section of validSections) {
+          const { error: e } = await supabase.from("sections").upsert(section, { ignoreDuplicates: true });
+          if (e) console.error(`[${name}]   skipping CRN ${section.course_registration_number} (${section.course_code_fk}): ${e.message}`);
+        }
+      } else {
+        console.log(`[${name}]   sections OK (${validSections.length}/${sectionUpserts.length})`);
+      }
+    }
+    console.log(`[${name}] Page ${i + 1}/${totalPages} done`);
   }
-  /*
 
-  /*
-  console.log('working!');
-  const { error } = await supabase
-    .from('courses')
-    .insert({ course_code: 'BU111', total_reviews: 1, easy: 1, useful: 1, liked: 1 })
-  */
+  console.log(`[${name}] Scrape complete.`);
+}
 
-
+(async () => {
+  const terms = getTermsToScrape();
+  console.log(`Scraping terms: ${terms.map(t => t.name).join(", ")}`);
+  // Each term runs in parallel with its own LORIS session
+  await Promise.all(terms.map(scrapeTerm));
+  console.log("All terms scraped.");
 })();
-//
-

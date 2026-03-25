@@ -1,0 +1,35 @@
+name: LORIS Scraper
+
+on:
+  schedule:
+    - cron: '0 11 * * 1'  # Mondays at 11am UTC (6am EST / 7am EDT)
+  workflow_dispatch:       # Allow manual runs from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install Chrome
+        run: npx puppeteer browsers install chrome
+
+      - name: Run scraper
+        run: node lorisAPI.js
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
