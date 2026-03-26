@@ -270,11 +270,7 @@ async function scrapeTerm({ code, name }) {
   for (let i = 0; i < totalPages; i++) {
     const courses = await getCoursesByPage(code, i * pageSize, pageSize, axiosInstance);
 
-    const courseUpserts = courses.map(c => ({
-      course_code: c.courseCode,
-      course_title: c.courseTitle,
-      total_reviews: 0,
-    }));
+    const courseUpserts = [];
     const sectionUpserts = [];
     const instructorUpserts = [];
 
@@ -284,6 +280,8 @@ async function scrapeTerm({ code, name }) {
         console.log(`[${name}]   ${course.courseCode} — no sections, skipping`);
         continue;
       }
+
+      courseUpserts.push({ course_code: course.courseCode, course_title: course.courseTitle, total_reviews: 0 });
 
       console.log(`[${name}]   ${course.courseCode} "${course.courseTitle}" — ${crns.length} section(s), fetching profs...`);
 
