@@ -201,7 +201,7 @@ async function getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, ax
     const response = await axiosInstance.post(courseDetailsURL, payload, {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
-    return response.data.data.map(el => el.courseReferenceNumber);
+    return (response.data.data ?? []).map(el => el.courseReferenceNumber);
   } catch (error) {
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
