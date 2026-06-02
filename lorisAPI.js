@@ -155,11 +155,12 @@ async function getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance, re
     const response = await axiosInstance.post(coursesURL, payload, {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
     });
-    return response.data.data.map(el => ({
+    return (response.data.data ?? []).map(el => ({
       courseCode: `${el.departmentCode} ${el.courseNumber}`,
       courseTitle: cleanCourseTitle(el.courseTitle),
     }));
   } catch (error) {
+    if (error?.response?.status === 500) return [];
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getCoursesByPage(term, pageOffset, pageMaxSize, axiosInstance, retryCount + 1);
