@@ -137,6 +137,7 @@ async function getCoursesTotalCount(term, axiosInstance, retryCount = 0) {
     });
     return response.data.totalCount;
   } catch (error) {
+    if (error?.response?.status === 500) return 0;
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getCoursesTotalCount(term, axiosInstance, retryCount + 1);
@@ -182,6 +183,7 @@ async function getSectionTotalCount(term, courseCode, axiosInstance, retryCount 
     });
     return response.data.totalCount;
   } catch (error) {
+    if (error?.response?.status === 500) return 0;
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getSectionTotalCount(term, courseCode, axiosInstance, retryCount + 1);
@@ -204,6 +206,7 @@ async function getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, ax
     });
     return (response.data.data ?? []).map(el => el.courseReferenceNumber);
   } catch (error) {
+    if (error?.response?.status === 500) return [];
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getCourseCRNsByPage(courseCode, term, pageOffset, pageMaxSize, axiosInstance, retryCount + 1);
@@ -223,6 +226,7 @@ async function getProfessorByCRN(term, CRN, axiosInstance, retryCount = 0) {
       emailAddress: f.emailAddress,
     }));
   } catch (error) {
+    if (error?.response?.status === 500) return [];
     if (retryCount < 5) {
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
       return getProfessorByCRN(term, CRN, axiosInstance, retryCount + 1);
